@@ -108,11 +108,11 @@
   "Assocs the given value `v` to the given key sequence `ks` in the given map `m`. If the given `v` contains any
   ::unresolved-names, these are \"pulled into\" `m` directly by prepending `ks` to their existing paths and dissocing
   them from `v`."
-  [m ks v]
-  (if-let [unresolved-names (::unresolved-names v)]
+  [m ks val]
+  (if-let [unresolved-names (::unresolved-names val)]
     (-> (assoc m ::unresolved-names (m/map-vals #(vec (concat ks %)) unresolved-names))
-        (assoc-in ks (dissoc v ::unresolved-names)))
-    (assoc-in m ks v)))
+        (assoc-in ks (dissoc val ::unresolved-names)))
+    (assoc-in m ks val)))
 
 (defmulti load
   "Load an entity of type `model` stored at `path` in the context `context`.
@@ -230,34 +230,29 @@
         ;; a function that prepares a dash card for insertion, while also validating to ensure the underlying
         ;; card_id could be resolved from the fully qualified name
         prepare-card-fn (fn [idx dashboard-id card]
-                          (let [final-c (-> (assoc card :fully-qualified-card-name (:card_id card))
-                                            (update :card_id fully-qualified-name->card-id)
-                                            (assoc :dashboard_id dashboard-id)
-                                            (update :parameter_mappings update-parameter-mappings))]
-                            (if (and (nil? (:card_id final-c))
-                                     (some? (:fully-qualified-card-name final-c)))
-                              ;; the lookup of some fully qualified card name failed
-                              ;; we will need to revisit this dashboard in the next pass
-                              {:revisit idx}
-                              ;; card was looked up OK, we can process it
-                              {:process final-c})))
+                          (let [proc-card  (-> card
+                                               (update-existing-capture-missing :card_id fully-qualified-name->card-id)
+                                               (assoc :dashboard_id dashboard-id))
+                                new-pm     (update-parameter-mappings (:parameter_mappings proc-card))
+                                final-card (pull-unresolved-names-up proc-card [:parameter_mappings] new-pm)]
+                            (if (::unresolved-names final-card)
+                              {;; index means something different here than in the Card case (it's actually the index
+                               ;; of the dashboard)
+                               ::revisit-index idx
+                               ::revisit       final-card}
+                              {::process final-card})))
+        prep-init-acc   {::process [] ::revisit-index [] ::revisit []}
         filtered-cards  (reduce-kv
                          (fn [acc idx [cards dash-id]]
                            (if dash-id
-                             (let [{:keys [process revisit]} (apply
-                                                              merge-with
-                                                              conj
-                                                              {:process [] :revisit []}
-                                                              (map (partial prepare-card-fn idx dash-id) cards))]
-                               (-> acc
-                                   (update :process #(concat % process))
-                                   (update :revisit #(concat % revisit))))
+                             (let [map-fn (map (partial prepare-card-fn idx dash-id) cards)
+                                   res    (apply merge-with conj prep-init-acc map-fn)]
+                               (merge-with concat acc res))
                              acc))
-                         {:process [] :revisit []}
+                         prep-init-acc
                          (mapv vector dashboard-cards dashboard-ids))
-        revisit-indexes (:revisit filtered-cards)
-        proceed-cards   (->> (:process filtered-cards)
-                             (map #(dissoc % :fully-qualified-card-name)))
+        revisit-indexes (vec (::revisit-index filtered-cards))
+        proceed-cards   (vec (::process filtered-cards))
         dashcard-ids    (maybe-upsert-many! context DashboardCard (map #(dissoc % :series) proceed-cards))
         series-pairs    (map vector (map :series proceed-cards) dashcard-ids)]
     (maybe-upsert-many! context DashboardCardSeries
