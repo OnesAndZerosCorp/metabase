@@ -1,12 +1,7 @@
 (ns metabase.moderation
-  (:require [metabase.models :refer [Card Dashboard ModerationRequest ModerationReview]]
+  (:require [metabase.models.moderation-request :refer [ModerationRequest]]
+            [metabase.models.moderation-review :refer [ModerationReview]]
             [toucan.db :as db]))
-
-(def ^:const moderated-item-name->class
-  "Map used to relate the type stored in the DB to the actual class of the moderated item (currently questions and
-  dashboards)"
-  {:card      Card
-   :dashboard Dashboard})
 
 (defn moderation-requests-for-item
   "ModerationRequests for the `moderated-item` whose ID is provided. `item-type` should be a keyword (`:card` or `:dashboard`)"
